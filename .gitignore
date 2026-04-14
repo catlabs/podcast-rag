@@ -1,0 +1,27 @@
+.DS_Store
+
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tooling and local runtime data
+.claude/
+.chroma_step0/
+output/
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Type checkers and lint caches
+.mypy_cache/
+.ruff_cache/
+.pyre/
