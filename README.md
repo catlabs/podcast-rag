@@ -1,19 +1,26 @@
-# Podcast transcriber (Whisper)
+# Podcast Parser
 
-Small Python CLI that:
-- reads a podcast RSS feed,
-- lets you choose **one episode or a range** of episodes (e.g. `2-10`) in the terminal,
-- downloads and transcribes each selection with `openai-whisper`,
-- saves `.txt` transcripts (and audio) under `output/`.
+Python utilities to:
+- download podcast episodes from RSS feeds,
+- transcribe audio locally with Whisper,
+- and explore transcripts with a simple semantic search proof of concept (ChromaDB + sentence-transformers).
+
+## Project scripts
+
+- `podcast_transcriber.py`  
+  Interactive CLI for RSS -> audio download -> Whisper transcription.
+- `step0_explore.py`  
+  Step-0 RAG exploration script: chunk one transcript, embed it, store vectors, and run semantic search queries.
 
 ## Prerequisites
 
-- Python 3.10+ recommended
-- `ffmpeg` installed and available in your `PATH`
+- Python 3.10+ (3.11 recommended)
+- `ffmpeg` available in your `PATH` (required by Whisper)
 
-Check `ffmpeg`:
+Check:
 
 ```bash
+python --version
 ffmpeg -version
 ```
 
@@ -23,21 +30,26 @@ On macOS (Homebrew):
 brew install ffmpeg
 ```
 
-## Install
+## Setup
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install feedparser requests openai-whisper
+pip install --upgrade pip
+pip install feedparser requests openai-whisper sentence-transformers chromadb
 ```
 
 ## Usage
+
+### 1) Transcribe podcast episodes
+
+Single feed:
 
 ```bash
 python podcast_transcriber.py --rss "https://example.com/podcast/feed.xml"
 ```
 
-Process several feeds in one run (you get a clear **START** / **DONE** block in the terminal for each):
+Multiple feeds in one run:
 
 ```bash
 python podcast_transcriber.py \
@@ -45,48 +57,42 @@ python podcast_transcriber.py \
   --rss "https://example.com/show-b.xml"
 ```
 
-Optional arguments:
-- `--model` Whisper model name (default: `medium`)
-- `--limit` how many **latest** episodes are listed and selectable (default: `10`). If you want a range like `2-50`, use `--limit 50` (or higher) so those rows appear in the list.
+Useful options:
+- `--model` Whisper model name (`tiny`, `base`, `small`, `medium`, `large`; default `medium`)
+- `--limit` number of latest episodes shown in the selection list (default `10`)
 
-### Choosing episodes
+Episode selection supports:
+- one episode (`5`)
+- an inclusive range (`2-10`, `10-2`, or `2–10`)
 
-After the episode list appears:
-
-- Enter **one number** to process a single episode (e.g. `5`).
-- Enter **two numbers separated by a hyphen** to process every episode in that inclusive range (e.g. `2-10` processes episodes 2 through 10, in order). You can also use an en dash (`–`) instead of `-`.
-- If the first number is larger than the second (e.g. `10-2`), the range is treated as `2-10`.
-
-The script then downloads and transcribes **each** episode in that range in one run, so you can start a long batch and leave it running.
-
-Example:
+### 2) Run Step-0 semantic search
 
 ```bash
-python podcast_transcriber.py --rss "https://example.com/podcast/feed.xml" --model small --limit 30
+python step0_explore.py
+python step0_explore.py "Qu'est-ce que Nanocorp ?"
+python step0_explore.py --reindex "startup San Francisco"
 ```
 
-## Output
+Notes:
+- embeddings are persisted in `.chroma_step0/`
+- default transcript path is defined in `step0_explore.py` (`TRANSCRIPT`)
 
-Files are grouped **one folder per podcast** (folder name = the show title from the RSS feed, sanitized). Inside each folder:
+## Output layout
 
-- Audio: `YYYY-MM-DD_episode_title.mp3` (or `.m4a`, etc.)
-- Transcript: `YYYY-MM-DD_episode_title.txt`
-
-The `YYYY-MM-DD` prefix is the episode date from the feed when available. That keeps files sorted **oldest first** when your file browser sorts by name. If the feed has no date, the prefix is `0000-00-00`.
-
-Example:
+Transcription output is written under `output/`, grouped by podcast title:
 
 ```text
 output/
-  My Favorite Show/
-    2024-01-15_intro_episode.mp3
-    2024-01-15_intro_episode.txt
-    2024-02-20_guest_interview.mp3
-    2024-02-20_guest_interview.txt
+  Podcast Name/
+    YYYY-MM-DD_episode_title.mp3
+    YYYY-MM-DD_episode_title.txt
 ```
+
+The date prefix keeps files naturally sorted oldest -> newest by filename.
 
 ## Troubleshooting
 
-- No episodes listed: check that the RSS URL is valid and reachable.
-- No audio URL found: some feeds/episodes do not expose enclosure links.
-- Whisper fails: confirm `ffmpeg` is installed and try a smaller model (for example `--model tiny`).
+- **No episodes listed:** verify RSS URL is valid and reachable.
+- **No audio URL found:** some feed entries do not provide enclosure links.
+- **Whisper errors:** confirm `ffmpeg` is installed and try a smaller model (`--model tiny`).
+- **Slow first run:** Whisper and embedding models may download on first execution.
