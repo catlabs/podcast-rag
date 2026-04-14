@@ -13,6 +13,7 @@ BASE_DIR   = Path(__file__).parent.parent   # podcast-parser/
 OUTPUT_DIR = BASE_DIR / "output"            # where transcripts live
 DATA_DIR   = BASE_DIR / "rag" / "data"      # created at runtime; gitignored
 CHROMA_DIR = DATA_DIR / "chroma"            # ChromaDB persistence
+DB_PATH    = DATA_DIR / "metadata.db"       # SQLite episode metadata
 
 # ── Embedding ─────────────────────────────────────────────────────────────────
 

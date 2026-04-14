@@ -1,17 +1,17 @@
 """
-rag/ingest.py — Step 1
-=======================
-Index all transcripts from output/ into ChromaDB.
+rag/ingest.py — Step 2 (updated)
+==================================
+Index all transcripts from output/ into ChromaDB + SQLite.
 
-What's new vs step0_explore.py:
-  - handles every transcript, not just one
-  - loads the embedding model ONCE and reuses it across all files
-  - parses podcast name, date, title from the file path
-  - stores metadata alongside each chunk (for display at search time)
-  - idempotent: re-running upserts the same data, nothing breaks
+What's new in Step 2:
+  - records each episode in SQLite (via rag.database)
+  - skips files that are already in SQLite on re-runs
+  - ingest_file stays pure (no DB knowledge)
+  - ingest_all manages the DB connection and skip logic
 
 Run directly:
-    python -m rag.ingest
+    python -m rag.ingest            # skip already-indexed files
+    python -m rag.ingest --reindex  # force re-index everything
 """
 
 import hashlib
@@ -29,6 +29,7 @@ from rag.config import (
     EMBED_MODEL,
     OUTPUT_DIR,
 )
+from rag.database import episode_exists, get_connection, init_db, upsert_episode
 
 # ── Module-level singletons ───────────────────────────────────────────────────
 # These are initialized on first use, then reused.
@@ -153,38 +154,62 @@ def ingest_file(path: Path) -> int:
 
 # ── Full ingestion run ────────────────────────────────────────────────────────
 
-def ingest_all(output_dir: Path = OUTPUT_DIR) -> dict:
+def ingest_all(output_dir: Path = OUTPUT_DIR, reindex: bool = False) -> dict:
     """
     Walk output_dir, find every .txt file, and index it.
-    Returns a summary: {"indexed": [...], "errors": [...]}.
+
+    Skips files already recorded in SQLite unless reindex=True.
+    Returns a summary: {"indexed": [...], "skipped": [...], "errors": [...]}.
     """
     txt_files = sorted(output_dir.rglob("*.txt"))
 
     if not txt_files:
         print(f"No .txt files found in {output_dir}")
-        return {"indexed": [], "errors": []}
+        return {"indexed": [], "skipped": [], "errors": []}
 
     print(f"Found {len(txt_files)} transcript(s)\n")
 
-    results: dict = {"indexed": [], "errors": []}
+    conn    = get_connection()
+    init_db(conn)
+    results: dict = {"indexed": [], "skipped": [], "errors": []}
 
     for path in txt_files:
+        file_path = str(path)
+
+        if not reindex and episode_exists(conn, file_path):
+            results["skipped"].append(path.name)
+            print(f"  –  {path.name!r}  (already indexed, skipping)")
+            continue
+
         try:
-            n = ingest_file(path)
+            n    = ingest_file(path)
+            meta = parse_transcript_path(path)
+            upsert_episode(
+                conn,
+                podcast     = meta["podcast"],
+                title       = meta["title"],
+                date        = meta["date"],
+                file_path   = file_path,
+                chunk_count = n,
+            )
             results["indexed"].append({"file": path.name, "chunks": n})
             print(f"  ✓  {path.name!r}  →  {n} chunks")
         except Exception as exc:
             results["errors"].append({"file": path.name, "error": str(exc)})
             print(f"  ✗  {path.name!r}  →  ERROR: {exc}")
 
-    total_chunks = sum(r["chunks"] for r in results["indexed"])
-    print(f"\nDone. {len(results['indexed'])} files indexed, "
-          f"{total_chunks} total chunks, "
-          f"{len(results['errors'])} error(s).")
+    conn.close()
+
+    total = sum(r["chunks"] for r in results["indexed"])
+    print(f"\nDone.  indexed={len(results['indexed'])}  "
+          f"skipped={len(results['skipped'])}  "
+          f"errors={len(results['errors'])}  "
+          f"total_chunks={total}")
     return results
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    ingest_all()
+    import sys
+    ingest_all(reindex="--reindex" in sys.argv)
