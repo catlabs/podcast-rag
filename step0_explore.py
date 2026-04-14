@@ -147,7 +147,7 @@ if __name__ == "__main__":
     if not queries:
         queries = [
             "Qu'est-ce que Nanocorp ?",
-            "San Francisco startup",
+            "entreprises existantes face à de grands changements technologiques",
         ]
 
     for q in queries:
