@@ -14,6 +14,7 @@ env/
 .claude/
 .chroma_step0/
 output/
+rag/data/
 
 # Test and coverage artifacts
 .pytest_cache/
