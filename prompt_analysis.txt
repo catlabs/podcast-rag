@@ -1,0 +1,19 @@
+Voici la transcription brute d’un podcast sur l’IA.
+
+Le texte peut contenir des erreurs (acronymes, termes techniques).
+
+Ta mission :
+
+1. Corriger discrètement les erreurs évidentes (ex: CLI, LLM, API)
+2. Produire un résumé en 8–10 points maximum
+3. Expliquer les concepts importants simplement
+4. Extraire les idées fortes
+5. Identifier :
+
+   * ce qui est actionnable
+   * ce qui est spéculatif / hype
+6. Lister les outils / technos mentionnés et expliquer comment elles sont 
+7. Identifier les tendances IA évoquées
+8. Donner 3 insights importants à retenir absolument
+
+Réponse claire, structurée, concise.
