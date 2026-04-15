@@ -5,7 +5,12 @@ All configuration in one place.
 Import from here in every other module — never hardcode paths elsewhere.
 """
 
+import os
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()   # reads .env if present; no-op if not
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -28,3 +33,8 @@ CHUNK_OVERLAP = 60    # words of overlap between consecutive chunks
 # ── Search ────────────────────────────────────────────────────────────────────
 
 TOP_K = 5   # default number of results to retrieve
+
+# ── LLM ───────────────────────────────────────────────────────────────────────
+
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL   = "claude-sonnet-4-5"
