@@ -27,3 +27,5 @@ htmlcov/
 .ruff_cache/
 .pyre/
 .env
+node_modules/
+dist/

@@ -83,12 +83,13 @@ def ask(query: str, top_k: int = TOP_K) -> dict:
         messages   = [{"role": "user", "content": user_message}],
     )
 
-    # Step 5 — return answer + deduplicated source list
+    # Step 5 — return answer + deduplicated sources + raw chunks (for observability UI)
     sources = _unique_sources(results)
 
     return {
         "answer":  response.content[0].text,
         "sources": sources,
+        "chunks":  results,   # full list: text, distance, title, podcast, date, chunk_index
     }
 
 

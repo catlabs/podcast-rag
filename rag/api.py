@@ -18,6 +18,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from rag.chat import ask
@@ -41,6 +42,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Podcast RAG", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
