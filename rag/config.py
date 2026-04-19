@@ -27,8 +27,8 @@ COLLECTION     = "podcasts"
 
 # ── Chunking ──────────────────────────────────────────────────────────────────
 
-CHUNK_SIZE    = 300   # words per chunk (~400 tokens)
-CHUNK_OVERLAP = 60    # words of overlap between consecutive chunks
+CHUNK_SIZE    = 150   # words per chunk (~400 tokens)
+CHUNK_OVERLAP = 30    # words of overlap between consecutive chunks
 
 # ── Search ────────────────────────────────────────────────────────────────────
 
