@@ -48,6 +48,12 @@ def init_db(conn: sqlite3.Connection) -> None:
             indexed_at  TEXT    NOT NULL
         )
     """)
+    # Add audio_url for RSS deduplication — safe to call on existing DBs:
+    # SQLite raises OperationalError("duplicate column name") if it already exists.
+    try:
+        conn.execute("ALTER TABLE episodes ADD COLUMN audio_url TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
 
 
@@ -59,6 +65,15 @@ def episode_exists(conn: sqlite3.Connection, file_path: str) -> bool:
     return row is not None
 
 
+def episode_exists_by_audio_url(conn: sqlite3.Connection, audio_url: str) -> bool:
+    """Return True if an episode with this audio URL has already been indexed.
+    Used for RSS deduplication — more reliable than title+date matching."""
+    row = conn.execute(
+        "SELECT 1 FROM episodes WHERE audio_url = ?", (audio_url,)
+    ).fetchone()
+    return row is not None
+
+
 def upsert_episode(
     conn: sqlite3.Connection,
     podcast: str,
@@ -66,24 +81,26 @@ def upsert_episode(
     date: str | None,
     file_path: str,
     chunk_count: int,
+    audio_url: str | None = None,
 ) -> int:
     """
     Insert a new episode row, or update it if file_path already exists.
     Returns the row id.
 
-    ON CONFLICT(file_path) DO UPDATE handles the re-index case:
-    if you force-reindex a file, the chunk_count and indexed_at are refreshed.
+    audio_url is optional — populated for RSS-ingested episodes, NULL for
+    episodes indexed from local files.
     """
     indexed_at = datetime.now(timezone.utc).isoformat()
     cursor = conn.execute(
         """
-        INSERT INTO episodes (podcast, title, date, file_path, chunk_count, indexed_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO episodes (podcast, title, date, file_path, chunk_count, indexed_at, audio_url)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(file_path) DO UPDATE SET
             chunk_count = excluded.chunk_count,
-            indexed_at  = excluded.indexed_at
+            indexed_at  = excluded.indexed_at,
+            audio_url   = excluded.audio_url
         """,
-        (podcast, title, date, file_path, chunk_count, indexed_at),
+        (podcast, title, date, file_path, chunk_count, indexed_at, audio_url),
     )
     conn.commit()
     return cursor.lastrowid
