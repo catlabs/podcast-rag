@@ -37,7 +37,24 @@ export interface ChatResponse {
   answer: string;
   sources: Source[];
   chunks: Chunk[];   // raw retrieved chunks, ordered by distance
+  model_key: string;
 }
+
+// ── Multi-model comparison types ──────────────────────────────────────────────
+
+export interface ModelResult {
+  answer:    string;
+  sources:   Source[];
+  chunks:    Chunk[];
+  model_key: string;
+}
+
+export type CompareResponse = Record<string, ModelResult>;
+
+export const MODEL_LABELS: Record<string, string> = {
+  minilm:       "MiniLM-L6 (English)",
+  multilingual: "MiniLM-L12 (Multilingual)",
+};
 
 export interface IngestResult {
   indexed: { file: string; chunks: number }[];
@@ -110,8 +127,16 @@ export function runIngest(reindex = false): Promise<IngestResult> {
   return apiFetch<IngestResult>(`/ingest?reindex=${reindex}`, { method: "POST" });
 }
 
-export function chat(query: string, top_k = 5): Promise<ChatResponse> {
+export function chat(query: string, top_k = 5, model_key = "minilm"): Promise<ChatResponse> {
   return apiFetch<ChatResponse>("/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, top_k, model_key }),
+  });
+}
+
+export function compareModels(query: string, top_k = 5): Promise<CompareResponse> {
+  return apiFetch<CompareResponse>("/chat/compare", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, top_k }),
