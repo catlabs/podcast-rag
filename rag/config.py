@@ -22,8 +22,19 @@ DB_PATH    = DATA_DIR / "metadata.db"       # SQLite episode metadata
 
 # ── Embedding ─────────────────────────────────────────────────────────────────
 
-EMBED_MODEL    = "all-MiniLM-L6-v2"
-COLLECTION     = "podcasts"
+EMBED_MODEL    = "all-MiniLM-L6-v2"   # kept for backward compat
+COLLECTION     = "podcasts"            # kept for backward compat
+
+# Multi-model registry — key → HuggingFace model name
+EMBED_MODELS: dict[str, str] = {
+    "minilm":        "all-MiniLM-L6-v2",
+    "multilingual":  "paraphrase-multilingual-MiniLM-L12-v2",
+}
+COLLECTIONS: dict[str, str] = {
+    "minilm":        "podcasts",               # existing collection — no migration needed
+    "multilingual":  "podcasts_multilingual",  # new
+}
+DEFAULT_MODEL_KEY = "minilm"
 
 # ── Chunking ──────────────────────────────────────────────────────────────────
 
