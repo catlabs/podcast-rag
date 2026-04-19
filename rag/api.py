@@ -26,8 +26,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from rag.chat import ask
-from rag.config import ANTHROPIC_API_KEY, TOP_K
+from rag.chat import ask, compare
+from rag.config import ANTHROPIC_API_KEY, DEFAULT_MODEL_KEY, TOP_K
+from rag.embed import MODEL_KEYS
 from rag.database import get_connection, init_db, list_episodes
 from rag.ingest import ingest_all
 from rag.rss import annotate_ingested, parse_feed, run_rss_ingest
@@ -62,6 +63,12 @@ app.add_middleware(
 # ── Request / Response models ─────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
+    query: str
+    top_k: int = TOP_K
+    model_key: str = DEFAULT_MODEL_KEY
+
+
+class CompareRequest(BaseModel):
     query: str
     top_k: int = TOP_K
 
@@ -125,6 +132,7 @@ async def chat_endpoint(body: ChatRequest):
     """
     Semantic search + Claude answer for a given question.
 
+    model_key selects which embedding model/collection to query.
     ask() is I/O-bound (Anthropic API call) and uses the synchronous SDK,
     so we run it in a thread just like ingest.
     """
@@ -133,8 +141,35 @@ async def chat_endpoint(body: ChatRequest):
             status_code=503,
             detail="ANTHROPIC_API_KEY is not configured. Add it to your .env file.",
         )
+    if body.model_key not in MODEL_KEYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown model_key {body.model_key!r}. Valid: {MODEL_KEYS}",
+        )
 
-    result = await asyncio.to_thread(ask, body.query, body.top_k)
+    result = await asyncio.to_thread(ask, body.query, body.top_k, body.model_key)
+    return result
+
+
+@app.post("/chat/compare")
+async def compare_endpoint(body: CompareRequest):
+    """
+    Run semantic search + Claude answer for all configured embedding models
+    concurrently and return a structured side-by-side payload.
+
+    The compare() function in chat.py uses ThreadPoolExecutor internally,
+    so wrapping in a single asyncio.to_thread is correct — the two LLM
+    calls run in parallel inside that thread.
+
+    Returns {model_key: {answer, sources, chunks, model_key}} for each model.
+    """
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="ANTHROPIC_API_KEY is not configured. Add it to your .env file.",
+        )
+
+    result = await asyncio.to_thread(compare, body.query, body.top_k)
     return result
 
 
