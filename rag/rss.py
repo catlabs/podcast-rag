@@ -31,7 +31,7 @@ from transcribe import (
     transcribe_audio,
 )
 
-from rag.config import OUTPUT_DIR
+from rag.config import DEFAULT_MODEL_KEY, OUTPUT_DIR
 from rag.database import episode_exists_by_audio_url, upsert_episode
 from rag.ingest import ingest_file
 
@@ -155,9 +155,10 @@ def _ingest_one(
     transcript_path = podcast_dir / (file_stem + ".txt")
     transcript_path.write_text(text)
 
-    # 4. Chunk + embed → ChromaDB + SQLite
+    # 4. Chunk + embed → ChromaDB + SQLite (all models)
     step_cb("indexing")
-    chunk_count = ingest_file(transcript_path)
+    counts      = ingest_file(transcript_path)
+    chunk_count = counts[DEFAULT_MODEL_KEY]
 
     upsert_episode(
         conn,

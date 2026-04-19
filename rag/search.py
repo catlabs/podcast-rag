@@ -4,48 +4,30 @@ rag/search.py — Step 3
 Semantic search over the indexed transcripts.
 
 Two public functions:
-  semantic_search(query, top_k) -> list[dict]   — find the most relevant chunks
-  format_context(results)       -> str          — shape them into an LLM prompt block
+  semantic_search(query, top_k, model_key) -> list[dict]   — find the most relevant chunks
+  format_context(results)                  -> str          — shape them into an LLM prompt block
 
 Run directly to try a query:
   python -m rag.search "votre question"
-  python -m rag.search "Nanocorp" --top 3
+  python -m rag.search "Nanocorp" --top 3 --model multilingual
 """
 
-import chromadb
-from sentence_transformers import SentenceTransformer
-
-from rag.config import CHROMA_DIR, COLLECTION, EMBED_MODEL, TOP_K
-
-# ── Singletons ────────────────────────────────────────────────────────────────
-# Same pattern as ingest.py: initialize once, reuse across calls.
-# search.py is intentionally independent of ingest.py — no cross-import.
-
-_model: SentenceTransformer | None = None
-_collection: chromadb.Collection | None = None
-
-
-def get_model() -> SentenceTransformer:
-    global _model
-    if _model is None:
-        _model = SentenceTransformer(EMBED_MODEL)
-    return _model
-
-
-def get_collection() -> chromadb.Collection:
-    global _collection
-    if _collection is None:
-        client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-        _collection = client.get_or_create_collection(COLLECTION)
-    return _collection
+from rag.config import DEFAULT_MODEL_KEY, TOP_K
+from rag.embed import get_collection, get_model
 
 
 # ── Search ────────────────────────────────────────────────────────────────────
 
-def semantic_search(query: str, top_k: int = TOP_K) -> list[dict]:
+def semantic_search(
+    query: str,
+    top_k: int = TOP_K,
+    model_key: str = DEFAULT_MODEL_KEY,
+) -> list[dict]:
     """
-    Embed the query with the same model used at index time, then ask ChromaDB
-    for the top_k nearest chunks by cosine distance.
+    Embed the query with the requested model, then query its ChromaDB collection.
+
+    model_key selects which (embedding model, collection) pair to use.
+    Default is "minilm" — existing single-model behavior is preserved.
 
     Returns a list of dicts, one per result:
       {
@@ -55,20 +37,15 @@ def semantic_search(query: str, top_k: int = TOP_K) -> list[dict]:
         "date":        str | None,
         "chunk_index": int,    # position of this chunk within its episode
         "distance":    float,  # cosine distance — lower means more similar
+        "model_key":   str,    # which model produced this result
       }
-
-    Why return dicts instead of a dataclass?  Simple enough that dicts are
-    fine; no behaviour to encapsulate, and JSON-serialisable out of the box
-    (useful in Step 5 when the API returns sources alongside the answer).
     """
-    query_vec = get_model().encode([query])
-
-    raw = get_collection().query(
+    query_vec  = get_model(model_key).encode([query])
+    raw        = get_collection(model_key).query(
         query_embeddings=query_vec.tolist(),
         n_results=top_k,
     )
 
-    # ChromaDB returns parallel lists — zip them into readable dicts
     return [
         {
             "text":        doc,
@@ -77,6 +54,7 @@ def semantic_search(query: str, top_k: int = TOP_K) -> list[dict]:
             "date":        meta["date"] or None,
             "chunk_index": meta["chunk_index"],
             "distance":    round(dist, 4),
+            "model_key":   model_key,
         }
         for doc, meta, dist in zip(
             raw["documents"][0],
@@ -92,16 +70,6 @@ def format_context(results: list[dict]) -> str:
     """
     Turn a list of search results into a formatted text block ready to be
     injected into an LLM prompt.
-
-    Each chunk gets a header with the episode title and date so the model
-    can cite sources in its answer.
-
-    Example output:
-        [Épisode : "Nanocorp..." — 2026-04-08]
-        <chunk text>
-        ---
-        [Épisode : "Selfpressionnisme..." — 2026-03-05]
-        <chunk text>
     """
     if not results:
         return "(Aucun extrait pertinent trouvé.)"
@@ -120,20 +88,25 @@ def format_context(results: list[dict]) -> str:
 if __name__ == "__main__":
     import sys
 
-    args  = sys.argv[1:]
-    top_k = TOP_K
+    args      = sys.argv[1:]
+    top_k     = TOP_K
+    model_key = DEFAULT_MODEL_KEY
 
-    # optional --top N flag
     if "--top" in args:
         i     = args.index("--top")
         top_k = int(args[i + 1])
         args  = args[:i] + args[i + 2:]
 
+    if "--model" in args:
+        i         = args.index("--model")
+        model_key = args[i + 1]
+        args      = args[:i] + args[i + 2:]
+
     query = " ".join(args) if args else "Qu'est-ce que Nanocorp ?"
 
-    print(f"Query : {query!r}  (top {top_k})\n")
+    print(f"Query : {query!r}  (top {top_k}, model={model_key!r})\n")
 
-    results = semantic_search(query, top_k=top_k)
+    results = semantic_search(query, top_k=top_k, model_key=model_key)
 
     for i, r in enumerate(results):
         date = r["date"] or "sans date"
@@ -142,5 +115,5 @@ if __name__ == "__main__":
         print(f"      {r['text'][:280]}…")
         print()
 
-    print("─── format_context() output (sent to LLM in Step 4) ───\n")
+    print("─── format_context() output ───\n")
     print(format_context(results))

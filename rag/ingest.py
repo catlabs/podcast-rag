@@ -9,6 +9,11 @@ What's new in Step 2:
   - ingest_file stays pure (no DB knowledge)
   - ingest_all manages the DB connection and skip logic
 
+What's new in the multi-model update:
+  - ingest_file embeds with ALL configured models by default
+  - chunking runs once; embedding loop runs once per model
+  - ingest_all tracks per-model indexing via episode_models table
+
 Run directly:
     python -m rag.ingest            # skip already-indexed files
     python -m rag.ingest --reindex  # force re-index everything
@@ -18,43 +23,21 @@ import hashlib
 import re
 from pathlib import Path
 
-import chromadb
-from sentence_transformers import SentenceTransformer
-
 from rag.config import (
     CHUNK_OVERLAP,
     CHUNK_SIZE,
-    CHROMA_DIR,
-    COLLECTION,
-    EMBED_MODEL,
+    DEFAULT_MODEL_KEY,
+    EMBED_MODELS,
     OUTPUT_DIR,
 )
-from rag.database import episode_exists, get_connection, init_db, upsert_episode
-
-# ── Module-level singletons ───────────────────────────────────────────────────
-# These are initialized on first use, then reused.
-# Avoids the Step 0 problem of loading the model once per file/query.
-
-_model: SentenceTransformer | None = None
-_collection: chromadb.Collection | None = None
-
-
-def get_model() -> SentenceTransformer:
-    global _model
-    if _model is None:
-        print(f"Loading embedding model '{EMBED_MODEL}'...")
-        _model = SentenceTransformer(EMBED_MODEL)
-        print("  Model ready.\n")
-    return _model
-
-
-def get_collection() -> chromadb.Collection:
-    global _collection
-    if _collection is None:
-        CHROMA_DIR.mkdir(parents=True, exist_ok=True)
-        client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-        _collection = client.get_or_create_collection(COLLECTION)
-    return _collection
+from rag.database import (
+    episode_indexed_by_model,
+    get_connection,
+    init_db,
+    record_model_indexing,
+    upsert_episode,
+)
+from rag.embed import get_collection, get_model
 
 
 # ── Parsing ───────────────────────────────────────────────────────────────────
@@ -107,49 +90,68 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
     return chunks
 
 
-def _chunk_id(path: Path, i: int) -> str:
+def chunk_id(path: Path, i: int) -> str:
     """
     Stable, unique ID for a chunk.
     SHA-1 of (file path, chunk index) → first 16 hex chars.
     Stable means re-indexing the same file produces the same IDs,
     so ChromaDB's upsert overwrites rather than duplicates.
+    Public so backfill.py can reconstruct IDs without re-chunking.
     """
     return hashlib.sha1(f"{path}|{i}".encode()).hexdigest()[:16]
 
 
+# keep the old private name as an alias so any external callers aren't broken
+_chunk_id = chunk_id
+
+
 # ── Per-file pipeline ─────────────────────────────────────────────────────────
 
-def ingest_file(path: Path) -> int:
+def ingest_file(
+    path: Path,
+    model_keys: list[str] | None = None,
+) -> dict[str, int]:
     """
     Full pipeline for a single transcript:
-      read → parse metadata → chunk → embed → upsert into ChromaDB
+      read → parse metadata → chunk (once) → embed + upsert per model
 
-    Returns the number of chunks indexed.
+    model_keys selects which embedding models to use.
+    Defaults to all configured models so every new ingestion populates
+    all collections simultaneously.
+
+    Returns {model_key: chunk_count} — count is the same for each key
+    since chunking is shared; the dict form lets callers record per-model.
     """
+    if model_keys is None:
+        model_keys = list(EMBED_MODELS.keys())
+
     meta   = parse_transcript_path(path)
     text   = path.read_text()
     chunks = chunk_text(text)
 
-    model      = get_model()
-    collection = get_collection()
+    ids       = [chunk_id(path, i) for i in range(len(chunks))]
+    metadatas = [
+        {
+            "podcast":     meta["podcast"],
+            "date":        meta["date"] or "",   # ChromaDB requires strings
+            "title":       meta["title"],
+            "chunk_index": i,
+        }
+        for i in range(len(chunks))
+    ]
 
-    embeddings = model.encode(chunks, show_progress_bar=False)
+    for key in model_keys:
+        model      = get_model(key)
+        collection = get_collection(key)
+        embeddings = model.encode(chunks, show_progress_bar=False)
+        collection.upsert(
+            ids        = ids,
+            documents  = chunks,
+            embeddings = embeddings.tolist(),
+            metadatas  = metadatas,
+        )
 
-    collection.upsert(
-        ids        = [_chunk_id(path, i) for i in range(len(chunks))],
-        documents  = chunks,
-        embeddings = embeddings.tolist(),
-        metadatas  = [
-            {
-                "podcast":     meta["podcast"],
-                "date":        meta["date"] or "",   # ChromaDB requires strings
-                "title":       meta["title"],
-                "chunk_index": i,
-            }
-            for i in range(len(chunks))
-        ],
-    )
-    return len(chunks)
+    return {key: len(chunks) for key in model_keys}
 
 
 # ── Full ingestion run ────────────────────────────────────────────────────────
@@ -158,10 +160,12 @@ def ingest_all(output_dir: Path = OUTPUT_DIR, reindex: bool = False) -> dict:
     """
     Walk output_dir, find every .txt file, and index it.
 
-    Skips files already recorded in SQLite unless reindex=True.
+    Skips files already recorded in episode_models for ALL requested models
+    unless reindex=True.
     Returns a summary: {"indexed": [...], "skipped": [...], "errors": [...]}.
     """
-    txt_files = sorted(output_dir.rglob("*.txt"))
+    model_keys = list(EMBED_MODELS.keys())
+    txt_files  = sorted(output_dir.rglob("*.txt"))
 
     if not txt_files:
         print(f"No .txt files found in {output_dir}")
@@ -176,15 +180,18 @@ def ingest_all(output_dir: Path = OUTPUT_DIR, reindex: bool = False) -> dict:
     for path in txt_files:
         file_path = str(path)
 
-        if not reindex and episode_exists(conn, file_path):
+        if not reindex and all(
+            episode_indexed_by_model(conn, file_path, key) for key in model_keys
+        ):
             results["skipped"].append(path.name)
-            print(f"  –  {path.name!r}  (already indexed, skipping)")
+            print(f"  –  {path.name!r}  (all models indexed, skipping)")
             continue
 
         try:
-            n    = ingest_file(path)
-            meta = parse_transcript_path(path)
-            upsert_episode(
+            counts = ingest_file(path, model_keys=model_keys)
+            n      = counts[DEFAULT_MODEL_KEY]
+            meta   = parse_transcript_path(path)
+            ep_id  = upsert_episode(
                 conn,
                 podcast     = meta["podcast"],
                 title       = meta["title"],
@@ -192,8 +199,11 @@ def ingest_all(output_dir: Path = OUTPUT_DIR, reindex: bool = False) -> dict:
                 file_path   = file_path,
                 chunk_count = n,
             )
+            for key in model_keys:
+                record_model_indexing(conn, ep_id, key)
+
             results["indexed"].append({"file": path.name, "chunks": n})
-            print(f"  ✓  {path.name!r}  →  {n} chunks")
+            print(f"  ✓  {path.name!r}  →  {n} chunks  ({', '.join(model_keys)})")
         except Exception as exc:
             results["errors"].append({"file": path.name, "error": str(exc)})
             print(f"  ✗  {path.name!r}  →  ERROR: {exc}")
