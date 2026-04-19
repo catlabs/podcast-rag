@@ -33,7 +33,7 @@ function distanceColor(d: number) {
 
 function DistanceBadge({ value }: { value: number }) {
   return (
-    <span className="badge" style={{ background: distanceColor(value), color: "#fff" }}>
+    <span className="badge" style={{ background: distanceColor(value), color: "#fff", border: "none" }}>
       {value.toFixed(3)}
     </span>
   );
@@ -62,7 +62,7 @@ function ChunkCard({ chunk, index }: { chunk: Chunk; index: number }) {
   );
 }
 
-// ── Model result panel (used both in single and compare mode) ─────────────────
+// ── Model result panel ────────────────────────────────────────────────────────
 
 function ResultPanel({ label, result }: { label?: string; result: ModelResult | ChatResponse }) {
   const [chunksOpen, setChunksOpen] = useState(false);
@@ -88,7 +88,7 @@ function ResultPanel({ label, result }: { label?: string; result: ModelResult | 
 
       <button
         className="link-btn"
-        style={{ marginTop: "0.5rem" }}
+        style={{ marginTop: "0.25rem" }}
         onClick={() => setChunksOpen(o => !o)}
       >
         {chunksOpen ? "Hide" : "Show"} {result.chunks.length} retrieved chunks
@@ -110,20 +110,15 @@ function ResultPanel({ label, result }: { label?: string; result: ModelResult | 
 function ChatTurn({ turn }: { turn: Turn }) {
   return (
     <div className="chat-turn">
-      {/* User query bubble */}
       <div className="turn-query-row">
         <div className="turn-query">{turn.query}</div>
       </div>
 
-      {/* Response area */}
       <div className="turn-response">
-        {turn.loading && <p className="muted">Searching…</p>}
+        {turn.loading && <p className="muted" style={{ fontSize: "0.88rem" }}>Searching…</p>}
+        {turn.error   && <p className="error">{turn.error}</p>}
 
-        {turn.error && <p className="error">{turn.error}</p>}
-
-        {turn.result && (
-          <ResultPanel result={turn.result} />
-        )}
+        {turn.result && <ResultPanel result={turn.result} />}
 
         {turn.compare && (
           <div className="compare-grid">
@@ -142,9 +137,9 @@ function ChatTurn({ turn }: { turn: Turn }) {
 function EmptyState() {
   return (
     <div className="chat-empty">
-      <div className="chat-empty-icon">◎</div>
-      <p>Ask a question about your indexed podcasts.</p>
-      <p className="muted">Switch to <strong>Compare</strong> mode to see results from both embedding models side by side.</p>
+      <div className="chat-empty-icon">🎙</div>
+      <h2>What can I help with?</h2>
+      <p>Ask a question about your indexed podcasts, or switch to <strong>Compare</strong> mode to see two embedding models side by side.</p>
     </div>
   );
 }
@@ -159,9 +154,8 @@ export default function ChatPanel() {
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef  = useRef<HTMLInputElement>(null);
-  let   nextId    = useRef(0);
+  const nextId    = useRef(0);
 
-  // Scroll to the latest message whenever turns update.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [turns]);
@@ -171,7 +165,7 @@ export default function ChatPanel() {
     const q = query.trim();
     if (!q || loading) return;
 
-    const id: number = nextId.current++;
+    const id = nextId.current++;
     const newTurn: Turn = { id, mode, query: q, loading: true };
 
     setTurns(prev => [...prev, newTurn]);
@@ -199,57 +193,63 @@ export default function ChatPanel() {
 
   return (
     <div className="chat-panel">
-      {/* Scrollable message history */}
+      {/* Message history */}
       <div className="chat-messages">
-        {turns.length === 0 ? (
-          <EmptyState />
-        ) : (
-          turns.map(turn => <ChatTurn key={turn.id} turn={turn} />)
-        )}
+        {turns.length === 0 ? <EmptyState /> : turns.map(t => <ChatTurn key={t.id} turn={t} />)}
         <div ref={bottomRef} />
       </div>
 
-      {/* Fixed bottom input */}
-      <div className="chat-input-bar">
-        {/* Mode toggle */}
-        <div className="mode-chips">
-          <button
-            type="button"
-            className={`mode-chip${mode === "single" ? " mode-chip--active" : ""}`}
-            onClick={() => setMode("single")}
-          >
-            Single model
-          </button>
-          <button
-            type="button"
-            className={`mode-chip${mode === "compare" ? " mode-chip--active" : ""}`}
-            onClick={() => setMode("compare")}
-          >
-            Compare models
-          </button>
-        </div>
-
-        <form onSubmit={handleSubmit} className="chat-input-form">
-          <div className="chat-input-wrapper">
-            <input
-              ref={inputRef}
-              type="text"
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              placeholder="Ask anything about your podcasts…"
-              disabled={loading}
-              autoFocus
-            />
+      {/* Input area */}
+      <div className="chat-input-area">
+        <div className="chat-input-shell">
+          {/* Mode chips */}
+          <div className="mode-chips">
             <button
-              type="submit"
-              className="send-btn"
-              disabled={loading || !query.trim()}
-              aria-label="Send"
+              type="button"
+              className={`mode-chip${mode === "single" ? " mode-chip--active" : ""}`}
+              onClick={() => setMode("single")}
             >
-              ↑
+              Single model
+            </button>
+            <button
+              type="button"
+              className={`mode-chip${mode === "compare" ? " mode-chip--active" : ""}`}
+              onClick={() => setMode("compare")}
+            >
+              Compare models
             </button>
           </div>
-        </form>
+
+          {/* Composer box */}
+          <form onSubmit={handleSubmit}>
+            <div className="chat-input-box">
+              <input
+                ref={inputRef}
+                className="chat-input-field"
+                type="text"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="Ask a question…"
+                disabled={loading}
+                autoFocus
+              />
+              <button
+                type="submit"
+                className="send-btn"
+                disabled={loading || !query.trim()}
+                aria-label="Send"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
+                </svg>
+              </button>
+            </div>
+          </form>
+
+          <p className="chat-input-disclaimer">
+            Podcast RAG can make mistakes. Verify important information.
+          </p>
+        </div>
       </div>
     </div>
   );
