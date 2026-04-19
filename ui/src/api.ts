@@ -45,6 +45,52 @@ export interface IngestResult {
   errors: { file: string; error: string }[];
 }
 
+// ── Source detection types ────────────────────────────────────────────────────
+
+export type SourceType = "rss" | "youtube" | "direct_audio" | "webpage" | "unknown";
+
+export interface DetectedSource {
+  url: string;
+  source_type: SourceType;
+  label: string;
+  meta: Record<string, unknown>;
+}
+
+// ── RSS types ─────────────────────────────────────────────────────────────────
+
+export interface FeedEpisode {
+  guid: string;
+  title: string;
+  date: string | null;
+  audio_url: string | null;    // null when the RSS entry has no audio enclosure
+  description: string;
+  duration_secs: number | null;
+  is_ingested: boolean;
+}
+
+export interface FeedResponse {
+  feed_title: string;
+  episodes: FeedEpisode[];
+}
+
+export interface RssIngestRequest {
+  feed_url: string;
+  feed_title: string;
+  whisper_model: string;
+  episodes: { guid: string; title: string; date: string | null; audio_url: string | null }[];
+}
+
+// SSE events emitted by POST /ingest/rss and POST /ingest/url
+export type RssProgressEvent =
+  | { type: "start";    total: number }
+  | { type: "progress"; episode_index: number; total: number; title: string;
+      step: "downloading" | "transcribing" | "indexing";
+      percent?: number;   // download progress 0-100
+      detail?:  string;   // e.g. "47 min audio" during transcription
+    }
+  | { type: "done";     episode_index: number; total: number; title: string; chunks: number }
+  | { type: "error";    episode_index: number; total: number; title: string; message: string };
+
 // ── Client functions ──────────────────────────────────────────────────────────
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -70,4 +116,80 @@ export function chat(query: string, top_k = 5): Promise<ChatResponse> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, top_k }),
   });
+}
+
+export function detectSource(url: string): Promise<DetectedSource> {
+  return apiFetch<DetectedSource>("/detect", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+}
+
+export interface UrlIngestRequest {
+  url: string;
+  source_type: string;
+  title?: string;
+  whisper_model?: string;
+}
+
+/** POST /ingest/url — returns raw Response for SSE streaming (same as ingestRssRaw) */
+export function ingestUrlRaw(req: UrlIngestRequest): Promise<Response> {
+  return fetch(`${BASE}/ingest/url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+}
+
+export function getFeed(url: string): Promise<FeedResponse> {
+  return apiFetch<FeedResponse>(`/feed?url=${encodeURIComponent(url)}`);
+}
+
+/**
+ * POST /ingest/rss — returns the raw Response so the caller can read
+ * the SSE stream from res.body (EventSource only supports GET).
+ */
+export function ingestRssRaw(req: RssIngestRequest): Promise<Response> {
+  return fetch(`${BASE}/ingest/rss`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+}
+
+/**
+ * Async generator that reads a fetch() ReadableStream of SSE lines.
+ * Yields parsed RssProgressEvent objects.
+ *
+ * The server sends lines like:  data: {"type":"progress",...}\n\n
+ */
+export async function* parseSSEStream(
+  body: ReadableStream<Uint8Array>
+): AsyncGenerator<RssProgressEvent> {
+  const reader  = body.getReader();
+  const decoder = new TextDecoder();
+  let   buffer  = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    // Each SSE message ends with \n\n; split on that boundary.
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() ?? "";   // keep the incomplete tail for next chunk
+
+    for (const part of parts) {
+      const line = part.trim();
+      if (line.startsWith("data:")) {
+        try {
+          yield JSON.parse(line.slice(5).trim()) as RssProgressEvent;
+        } catch {
+          // malformed line — skip
+        }
+      }
+    }
+  }
 }
