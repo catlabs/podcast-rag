@@ -3,22 +3,20 @@ rag/chat.py — Step 4
 =====================
 RAG: retrieve relevant chunks, build a prompt, call Claude, return the answer.
 
-This is where the two previous steps connect:
-  search.semantic_search()  →  finds the most relevant transcript excerpts
-  search.format_context()   →  shapes them into a readable block
-  anthropic.messages.create →  generates an answer grounded in that context
-
-The model is instructed to answer ONLY from the provided excerpts and to cite
-episode titles — so the answer is traceable back to the source audio.
+Public functions:
+  ask(query, top_k, model_key)  — single-model RAG answer
+  compare(query, top_k)         — run ask() for all models concurrently,
+                                  return {model_key: result} for side-by-side comparison
 
 Run directly:
   python -m rag.chat "Qu'est-ce que Nanocorp ?"
   python -m rag.chat "Qu'est-ce que Nanocorp ?" --top 3
+  python -m rag.chat "Qu'est-ce que Nanocorp ?" --model multilingual
 """
 
 import anthropic
 
-from rag.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, TOP_K
+from rag.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, DEFAULT_MODEL_KEY, EMBED_MODELS, TOP_K
 from rag.search import format_context, semantic_search
 
 # ── Prompt ────────────────────────────────────────────────────────────────────
@@ -47,19 +45,16 @@ Question : {query}
 
 # ── RAG call ──────────────────────────────────────────────────────────────────
 
-def ask(query: str, top_k: int = TOP_K) -> dict:
+def ask(query: str, top_k: int = TOP_K, model_key: str = DEFAULT_MODEL_KEY) -> dict:
     """
-    Full RAG pipeline for one question:
-      1. semantic_search  — find the top_k most relevant chunks
-      2. format_context   — assemble them into a readable block
-      3. build_prompt     — wrap context + question into the user message
-      4. Claude API call  — generate a grounded answer
-      5. return           — answer text + source list
+    Full RAG pipeline for one question using the given embedding model.
 
     Returns:
       {
-        "answer":  str,          # Claude's response
-        "sources": list[dict],   # the chunks used, each with title/date/distance
+        "answer":    str,
+        "sources":   list[dict],   # deduplicated episodes cited
+        "chunks":    list[dict],   # raw retrieved chunks with distances
+        "model_key": str,          # which embedding model was used
       }
     """
     if not ANTHROPIC_API_KEY:
@@ -67,14 +62,10 @@ def ask(query: str, top_k: int = TOP_K) -> dict:
             "ANTHROPIC_API_KEY is not set. Create a .env file: cp .env.example .env"
         )
 
-    # Step 1 & 2 — retrieve and format
-    results = semantic_search(query, top_k=top_k)
-    context = format_context(results)
-
-    # Step 3 — build the user message
+    results      = semantic_search(query, top_k=top_k, model_key=model_key)
+    context      = format_context(results)
     user_message = build_prompt(query, context)
 
-    # Step 4 — call Claude
     client   = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     response = client.messages.create(
         model      = ANTHROPIC_MODEL,
@@ -83,32 +74,47 @@ def ask(query: str, top_k: int = TOP_K) -> dict:
         messages   = [{"role": "user", "content": user_message}],
     )
 
-    # Step 5 — return answer + deduplicated sources + raw chunks (for observability UI)
-    sources = _unique_sources(results)
-
     return {
-        "answer":  response.content[0].text,
-        "sources": sources,
-        "chunks":  results,   # full list: text, distance, title, podcast, date, chunk_index
+        "answer":    response.content[0].text,
+        "sources":   _unique_sources(results),
+        "chunks":    results,
+        "model_key": model_key,
     }
 
 
+def compare(query: str, top_k: int = TOP_K) -> dict[str, dict]:
+    """
+    Run ask() for every configured embedding model concurrently.
+
+    Both searches + LLM calls run in parallel threads (ThreadPoolExecutor)
+    since ask() is I/O-bound (Anthropic API). The caller wraps this in
+    asyncio.to_thread() so the event loop is not blocked.
+
+    Returns {model_key: ask_result} for each model.
+    If one model's call fails, its exception propagates immediately.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    results: dict[str, dict] = {}
+
+    with ThreadPoolExecutor(max_workers=len(EMBED_MODELS)) as pool:
+        futures = {pool.submit(ask, query, top_k, key): key for key in EMBED_MODELS}
+        for future in as_completed(futures):
+            key = futures[future]
+            results[key] = future.result()
+
+    return results
+
+
 def _unique_sources(results: list[dict]) -> list[dict]:
-    """
-    Deduplicate sources by episode title.
-    Multiple chunks from the same episode collapse into one source entry.
-    """
+    """Deduplicate sources by episode title."""
     seen   = set()
     unique = []
     for r in results:
         key = r["title"]
         if key not in seen:
             seen.add(key)
-            unique.append({
-                "title":   r["title"],
-                "podcast": r["podcast"],
-                "date":    r["date"],
-            })
+            unique.append({"title": r["title"], "podcast": r["podcast"], "date": r["date"]})
     return unique
 
 
@@ -117,19 +123,25 @@ def _unique_sources(results: list[dict]) -> list[dict]:
 if __name__ == "__main__":
     import sys
 
-    args  = sys.argv[1:]
-    top_k = TOP_K
+    args      = sys.argv[1:]
+    top_k     = TOP_K
+    model_key = DEFAULT_MODEL_KEY
 
     if "--top" in args:
         i     = args.index("--top")
         top_k = int(args[i + 1])
         args  = args[:i] + args[i + 2:]
 
+    if "--model" in args:
+        i         = args.index("--model")
+        model_key = args[i + 1]
+        args      = args[:i] + args[i + 2:]
+
     query = " ".join(args) if args else "Qu'est-ce que Nanocorp ?"
 
-    print(f"Question : {query!r}\n")
+    print(f"Question : {query!r}  (model={model_key!r})\n")
 
-    result = ask(query, top_k=top_k)
+    result = ask(query, top_k=top_k, model_key=model_key)
 
     print("Réponse :")
     print(result["answer"])
