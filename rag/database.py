@@ -36,7 +36,7 @@ def get_connection() -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Create the episodes table if it doesn't exist yet."""
+    """Create tables if they don't exist yet. Safe to call on every startup."""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS episodes (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,6 +54,25 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE episodes ADD COLUMN audio_url TEXT")
     except sqlite3.OperationalError:
         pass
+
+    # Track which embedding model has indexed each episode.
+    # Enables multi-model ingestion and targeted backfill.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS episode_models (
+            episode_id  INTEGER NOT NULL REFERENCES episodes(id),
+            model_key   TEXT    NOT NULL,
+            indexed_at  TEXT    NOT NULL,
+            PRIMARY KEY (episode_id, model_key)
+        )
+    """)
+
+    # Back-populate existing episodes as already indexed by the baseline model.
+    # INSERT OR IGNORE is idempotent — runs safely on every startup.
+    conn.execute("""
+        INSERT OR IGNORE INTO episode_models (episode_id, model_key, indexed_at)
+        SELECT id, 'minilm', indexed_at FROM episodes
+    """)
+
     conn.commit()
 
 
@@ -72,6 +91,41 @@ def episode_exists_by_audio_url(conn: sqlite3.Connection, audio_url: str) -> boo
         "SELECT 1 FROM episodes WHERE audio_url = ?", (audio_url,)
     ).fetchone()
     return row is not None
+
+
+def episode_indexed_by_model(
+    conn: sqlite3.Connection,
+    file_path: str,
+    model_key: str,
+) -> bool:
+    """Return True if file_path has been indexed by the given model_key."""
+    row = conn.execute(
+        """
+        SELECT 1 FROM episode_models em
+        JOIN   episodes e ON e.id = em.episode_id
+        WHERE  e.file_path = ? AND em.model_key = ?
+        """,
+        (file_path, model_key),
+    ).fetchone()
+    return row is not None
+
+
+def record_model_indexing(
+    conn: sqlite3.Connection,
+    episode_id: int,
+    model_key: str,
+) -> None:
+    """Mark that model_key has indexed episode_id. Idempotent (upserts indexed_at)."""
+    indexed_at = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO episode_models (episode_id, model_key, indexed_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(episode_id, model_key) DO UPDATE SET indexed_at = excluded.indexed_at
+        """,
+        (episode_id, model_key, indexed_at),
+    )
+    conn.commit()
 
 
 def upsert_episode(
