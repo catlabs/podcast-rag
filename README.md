@@ -1,58 +1,66 @@
 # Podcast RAG
 
 A local Retrieval-Augmented Generation (RAG) system for podcast transcripts.
-Transcribe episodes with Whisper, index them into a vector store, and ask questions
-that get answered by Claude — grounded in what the podcasts actually said.
+Transcribe episodes with Whisper, index them into a vector store, and chat with Claude — grounded in what the podcasts actually said.
 
-Built as a learning and portfolio project in Python + React, focusing on clean,
-modular design and real-world AI system concepts.
+Built as a learning and portfolio project in Python + React, focusing on clean, modular design and real-world AI system concepts.
 
 ---
 
 ## What it does
 
-1. **Transcription** — download audio from any RSS feed and transcribe it locally
-   with [Whisper](https://github.com/openai/whisper).
+1. **Transcription** — download audio from RSS feeds, YouTube, or direct URLs and transcribe locally with [Whisper](https://github.com/openai/whisper).
 
-2. **Indexing** — chunk transcripts into overlapping windows, embed them with
-   [`all-MiniLM-L6-v2`](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
-   (384-dim, runs on CPU), and store vectors in [ChromaDB](https://www.trychroma.com/).
-   Episode metadata (podcast, title, date, chunk count) is kept in SQLite.
+2. **Indexing** — chunk transcripts into overlapping windows, embed them with two sentence-transformer models, and store vectors in [ChromaDB](https://www.trychroma.com/). Episode metadata is kept in SQLite.
 
-3. **Semantic search** — query the vector store to retrieve the most relevant
-   transcript excerpts for any question.
+3. **Semantic search** — query the vector store to retrieve the most relevant transcript excerpts for any question.
 
-4. **Chat** — feed the retrieved excerpts to [Claude](https://www.anthropic.com/claude)
-   as context, get a grounded answer that cites specific episodes.
+4. **Chat** — feed the retrieved excerpts to [Claude](https://www.anthropic.com/claude) as context; get a grounded answer that cites specific episodes.
 
-5. **Web UI** — a React + TypeScript interface for browsing indexed episodes,
-   ingesting new ones (local files or RSS feed), and chatting.
+5. **Compare mode** — run the same query through both embedding models simultaneously and see results side by side.
+
+6. **Web UI** — React + TypeScript interface with a ChatGPT-style sidebar layout for browsing episodes, ingesting new sources, and chatting.
 
 ---
 
 ## Architecture
 
 ```
-transcribe.py          RSS → audio download → Whisper → .txt files
+transcribe.py            RSS → audio download → Whisper → .txt files
 rag/
-  config.py            centralized constants and env variables
-  ingest.py            chunk + embed → ChromaDB; upsert → SQLite
-  database.py          SQLite: episode metadata (podcast, title, date, chunks)
-  search.py            semantic_search(): embed query → ChromaDB nearest neighbours
-  chat.py              ask(): search → Claude prompt → answer + cited sources
-  rss.py               RSS feed parsing + per-episode ingestion pipeline
-  api.py               FastAPI: /episodes /ingest /feed /ingest/rss /chat
+  config.py              constants, env variables, model registry
+  embed.py               central model/collection registry (lazy-loaded, shared ChromaDB client)
+  ingest.py              chunk + embed → ChromaDB (all models); upsert → SQLite
+  database.py            SQLite: episodes + episode_models tables
+  search.py              semantic_search(query, model_key) → nearest neighbours
+  chat.py                ask() + compare() → Claude answer + cited sources
+  rss.py                 RSS feed parsing + per-episode ingestion pipeline
+  source.py              URL type detection (rss / youtube / audio / webpage)
+  yt.py                  YouTube download via yt-dlp + ingest pipeline
+  backfill.py            backfill existing episodes into the multilingual collection
+  api.py                 FastAPI: all HTTP endpoints + SSE streaming
 ui/
   src/
-    api.ts             typed fetch client + SSE stream helper
+    api.ts               typed fetch client + SSE stream parser
+    App.tsx              sidebar layout + tab routing
     components/
-      EpisodeList.tsx  table of indexed episodes
-      ChatPanel.tsx    semantic search + Claude Q&A
-      RssIngest.tsx    RSS feed browser + live ingestion progress
-      IngestButton.tsx local .txt file indexer
+      ChatPanel.tsx      chat UI with single / compare mode
+      EpisodeList.tsx    table of indexed episodes
+      SourceIngest.tsx   unified URL ingestion (RSS, YouTube, audio)
+      IngestButton.tsx   local .txt file indexer
 ```
 
-Two stores, complementary roles:
+### Two embedding models
+
+| Key | Model | Collection |
+|-----|-------|------------|
+| `minilm` | `all-MiniLM-L6-v2` | `podcasts` |
+| `multilingual` | `paraphrase-multilingual-MiniLM-L12-v2` | `podcasts_multilingual` |
+
+Both are 384-dim and run on CPU. New ingestion indexes into both collections automatically. Existing episodes can be backfilled into the multilingual collection with `python -m rag.backfill`.
+
+### Two stores, complementary roles
+
 - **ChromaDB** — fast nearest-neighbour vector search
 - **SQLite** — list / filter / count episodes (ChromaDB is bad at this)
 
@@ -85,35 +93,32 @@ python3 -m venv .venv
 source .venv/bin/activate       # Windows: .venv\Scripts\activate
 pip install --upgrade pip
 pip install feedparser requests openai-whisper sentence-transformers \
-            chromadb fastapi uvicorn python-dotenv anthropic
+            chromadb fastapi uvicorn python-dotenv anthropic yt-dlp
 ```
 
 Copy the environment file and add your Anthropic API key:
 
 ```bash
 cp .env.example .env
-# edit .env and set ANTHROPIC_API_KEY=sk-ant-...
+# edit .env → set ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 ### Frontend
 
 ```bash
-cd ui
-npm install
+cd ui && npm install
 ```
 
 ---
 
 ## Running
 
-Start both servers (two terminals):
-
 ```bash
 # terminal 1 — API
 source .venv/bin/activate
 uvicorn rag.api:app --reload
 
-# terminal 2 — UI dev server
+# terminal 2 — UI
 cd ui && npm run dev
 ```
 
@@ -125,12 +130,12 @@ Open [http://localhost:5173](http://localhost:5173).
 
 ### Web UI
 
-| Tab | What it does |
-|-----|-------------|
+| Section | What it does |
+|---------|-------------|
+| **Chat** | Ask a question; get Claude's answer + cited sources + raw retrieved chunks. Toggle **Compare models** to see both embedding models side by side. |
 | **Episodes** | Browse all indexed episodes |
-| **Chat** | Ask a question; see Claude's answer + cited sources + raw retrieved chunks |
-| **RSS** | Paste a feed URL, select episodes, watch live download → transcribe → index progress |
-| **Local** | Index `.txt` transcript files already in `output/` |
+| **Ingest from URL** | Paste any RSS, YouTube, or audio URL — the app detects the type and guides you through ingestion with live progress |
+| **Local indexing** | Index `.txt` transcript files already in `output/` |
 
 ### CLI — transcribe a feed
 
@@ -149,11 +154,35 @@ python -m rag.ingest              # index new files in output/
 python -m rag.ingest --reindex    # re-embed everything
 ```
 
+### CLI — backfill multilingual collection
+
+Run this once after adding the multilingual model to index existing episodes without re-transcribing:
+
+```bash
+python -m rag.backfill --dry-run   # preview what would be processed
+python -m rag.backfill             # execute
+```
+
 ### CLI — search without the UI
 
 ```bash
 python -m rag.search "your question here"
 ```
+
+---
+
+## API endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/episodes` | List all indexed episodes |
+| `POST` | `/ingest` | Index local transcripts from `output/` |
+| `POST` | `/detect` | Detect URL type (rss / youtube / audio / webpage) |
+| `GET` | `/feed?url=…` | Parse an RSS feed, annotate ingested episodes |
+| `POST` | `/ingest/rss` | Ingest selected RSS episodes (SSE progress stream) |
+| `POST` | `/ingest/url` | Ingest a YouTube or audio URL (SSE progress stream) |
+| `POST` | `/chat` | Semantic search + Claude answer |
+| `POST` | `/chat/compare` | Same query through all embedding models in parallel |
 
 ---
 
@@ -165,8 +194,8 @@ output/
     YYYY-MM-DD_episode_title.mp3
     YYYY-MM-DD_episode_title.txt
 rag/data/
-  chroma/     ChromaDB vector store
-  episodes.db SQLite metadata
+  chroma/        ChromaDB vector store (podcasts + podcasts_multilingual)
+  episodes.db    SQLite metadata
 ```
 
 ---
@@ -174,6 +203,7 @@ rag/data/
 ## Troubleshooting
 
 - **No audio URL found** — some RSS entries have no enclosure link; nothing to download.
-- **Whisper errors** — confirm `ffmpeg` is installed; try `--model tiny` for speed.
-- **Slow first run** — Whisper and the embedding model download on first use (~500 MB total for `medium`).
-- **ANTHROPIC_API_KEY not set** — the `/chat` endpoint returns 503 until the key is configured in `.env`.
+- **Whisper errors** — confirm `ffmpeg` is installed and in `PATH`; try `--model tiny` for speed.
+- **Slow first run** — Whisper and both embedding models download on first use (~700 MB total for `medium`).
+- **ANTHROPIC_API_KEY not set** — `/chat` returns 503 until the key is configured in `.env`.
+- **SQLite threading errors** — always create connections inside the thread that uses them; never pass a connection across threads.
